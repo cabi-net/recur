@@ -1,0 +1,76 @@
+name: build recur
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install pyinstaller
+        run: pip install pyinstaller
+
+      - name: build
+        run: pyinstaller --onefile --console --name recur recur.py
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: recur-${{ matrix.os }}
+          path: dist/recur*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: rename binaries
+        run: |
+          mv artifacts/recur-windows-latest/recur.exe artifacts/recur-windows.exe
+          mv artifacts/recur-macos-latest/recur artifacts/recur-macos
+          mv artifacts/recur-ubuntu-latest/recur artifacts/recur-linux
+          chmod +x artifacts/recur-macos artifacts/recur-linux
+
+      - name: create github release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ## recur ${{ github.ref_name }}
+
+            Standalone builds — no Python install required.
+
+            | Platform | File |
+            |----------|------|
+            | Windows  | `recur-windows.exe` |
+            | macOS    | `recur-macos` |
+            | Linux    | `recur-linux` |
+
+            **macOS / Linux:** make it executable with `chmod +x recur-macos` (or `recur-linux`), then run it from a terminal.
+            On macOS, Gatekeeper may block the unsigned binary — run `xattr -d com.apple.quarantine recur-macos` to clear the quarantine flag, or right-click → Open.
+          files: |
+            artifacts/recur-windows.exe
+            artifacts/recur-macos
+            artifacts/recur-linux

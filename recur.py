@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-recur - a place for thoughts to arrive and return
+recur
 """
 
 import json
 import random
 import re
+import sys
+import time
 from pathlib import Path
 from datetime import datetime
+
+# ensure unicode symbols render on legacy windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ENTRIES_FILE = Path.home() / ".recur" / "entries.json"
 STOP_WORDS = {
@@ -20,14 +26,15 @@ STOP_WORDS = {
     "just", "about", "into", "through", "during", "before", "after",
     "above", "below", "between", "under", "again", "there", "here",
     "all", "each", "some", "any", "both", "more", "most", "other",
-    "such", "only", "same", "than", "too", "very", "now", "how", "why"
+    "such", "like", "only", "same", "than", "too", "very", "now", "how", "why"
 }
 
 def load_entries():
     if not ENTRIES_FILE.exists():
         ENTRIES_FILE.parent.mkdir(parents=True, exist_ok=True)
         return []
-    return json.loads(ENTRIES_FILE.read_text())
+    # utf-8-sig tolerates a byte-order mark if one slipped into the file
+    return json.loads(ENTRIES_FILE.read_text(encoding="utf-8-sig"))
 
 def save_entries(entries):
     ENTRIES_FILE.write_text(json.dumps(entries, indent=2))
@@ -58,6 +65,69 @@ def find_recurrence(new_text, entries):
 
     return None, None
 
+GREETINGS = {"hi", "hello", "hey"}
+
+# shown the first time a new user simply says hello.
+# {name} is scramble-glitched into place when output is a terminal.
+HELLO_LOG = """hi! i'm {name} — i made this.
+
+recur is for logging any thought or idea, stowing it away from view, and noticing when it
+comes back in another way. write something, and one day it might find you again.
+"""
+
+NAME = "sila"
+GLITCH_CHARS = "!@#$%&*?/\\|<>=+~^0123456789"
+GLITCH_DELAY = 0.11  # seconds per frame
+GLITCH_NOISE_FRAMES = 8  # pure-scramble frames before the name resolves
+
+GREY, RESET = "\033[90m", "\033[0m"
+
+def glitch_name(prefix, name, suffix):
+    """print one line, scrambling `name` then resolving it left-to-right in place.
+
+    uses only \\r (carriage return) so it stays reliable across terminals.
+    """
+    def draw(name_render):
+        sys.stdout.write(f"\r{GREY}>{RESET} {GREY}{prefix}{name_render}{suffix}{RESET}")
+        sys.stdout.flush()
+
+    # pure noise, then resolve one real character at a time
+    frames = ["".join(random.choice(GLITCH_CHARS) for _ in name)
+              for _ in range(GLITCH_NOISE_FRAMES)]
+    for i in range(len(name) + 1):
+        frames.append(name[:i] + "".join(random.choice(GLITCH_CHARS) for _ in name[i:]))
+
+    for frame in frames:
+        draw(frame)
+        time.sleep(GLITCH_DELAY)
+    draw(name)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+def greeting_only(text):
+    """true if the entry is nothing but a greeting (one word: hi/hello/hey)"""
+    words = re.findall(r'[a-z]+', text.lower())
+    return len(words) == 1 and words[0] in GREETINGS
+
+def has_greeting(text):
+    """true if the entry contains a greeting word anywhere"""
+    return any(w in GREETINGS for w in re.findall(r'[a-z]+', text.lower()))
+
+def show_hello():
+    print()
+    animate = sys.stdout.isatty()
+    for line in HELLO_LOG.split("\n"):
+        if "{name}" in line:
+            if animate:
+                prefix, suffix = line.split("{name}")
+                glitch_name(prefix, NAME, suffix)
+            else:
+                # non-terminal (piped / redirected): print plainly, no animation
+                prompt(line.format(name=NAME))
+        else:
+            prompt(line)
+    print()
+
 def format_time(iso_string):
     dt = datetime.fromisoformat(iso_string)
     return dt.strftime("%b %d, %Y")
@@ -75,8 +145,7 @@ def main():
     print()
     prompt("recur")
     print()
-    prompt("let your thoughts arrive.")
-    prompt("press enter twice when done.")
+    prompt("write something... press enter twice when done.")
     print()
 
     # gather entry
@@ -90,10 +159,23 @@ def main():
             break
         lines.append(line)
 
+    # drop a leading byte-order mark, whether it arrives as ﻿ or
+    # as the mojibake "ï»¿" produced when utf-8 bom bytes hit a non-utf-8 stdin
     new_text = "\n".join(lines).strip()
+    for bom in ("﻿", "ï»¿"):
+        if new_text.startswith(bom):
+            new_text = new_text[len(bom):]
     if not new_text:
         prompt("nothing arrived. that's okay too.")
         return
+
+    # easter egg: greet first-time users who say hello
+    first_time = not entries
+    if first_time and has_greeting(new_text):
+        show_hello()
+        # a bare greeting is consumed by the hello; anything more gets saved
+        if greeting_only(new_text):
+            return
 
     # look for recurrence
     word, match = find_recurrence(new_text, entries)
@@ -145,4 +227,13 @@ def main():
     prompt()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        print()
+    finally:
+        # keep the window open when launched by double-click
+        try:
+            input("\033[90m(press enter to close)\033[0m ")
+        except (KeyboardInterrupt, EOFError):
+            pass
